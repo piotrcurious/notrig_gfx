@@ -22,17 +22,23 @@ using u64 = uint64_t;
 constexpr int FX_SHIFT = 16;
 constexpr fx FX_ONE = (fx)1 << FX_SHIFT;
 
-static inline fx fxFromInt(int32_t v) { return (fx)(v << FX_SHIFT); }
-static inline fx fxFromRaw(int32_t raw) { return raw; }
-static inline fx fxAdd(fx a, fx b) { return a + b; }
-static inline fx fxSub(fx a, fx b) { return a - b; }
+static constexpr inline fx fxFromInt(int32_t v) { return (fx)(v << FX_SHIFT); }
+static constexpr inline fx fxFromRaw(int32_t raw) { return raw; }
+static constexpr inline fx fxAdd(fx a, fx b) { return a + b; }
+static constexpr inline fx fxSub(fx a, fx b) { return a - b; }
 
 static inline fx fxMul(fx a, fx b) {
-  return (fx)(((s64)a * (s64)b) >> FX_SHIFT);
+  return (fx)(((s64)a * (s64)b + (1LL << (FX_SHIFT - 1))) >> FX_SHIFT);
 }
 
 static inline fx fxDiv(fx a, fx b) {
-  return (fx)(((s64)a << FX_SHIFT) / (s64)b);
+  if (b == 0) return 0; // Basic safety
+  s64 numerator = (s64)a << FX_SHIFT;
+  if ((numerator ^ b) >= 0) {
+    return (fx)((numerator + (b / 2)) / b);
+  } else {
+    return (fx)((numerator - (b / 2)) / b);
+  }
 }
 
 static inline fx fxAbs(fx v) { return v < 0 ? -v : v; }
@@ -102,10 +108,20 @@ static inline fx len3(Vec3 v) {
 }
 
 static inline Vec3 normalize3(Vec3 v) {
-  fx l = len3(v);
-  if (l == 0) return {0, 0, 0};
-  fx inv = fxDiv(FX_ONE, l);
-  return scale3(v, inv);
+  u64 s = (u64)((s64)v.x * v.x) + (u64)((s64)v.y * v.y) + (u64)((s64)v.z * v.z);
+  if (s == 0) return {0, 0, 0};
+  u64 root = isqrt64(s);
+  if (root == 0) return {0, 0, 0};
+
+  Vec3 r;
+  s64 nx = (s64)v.x << FX_SHIFT;
+  s64 ny = (s64)v.y << FX_SHIFT;
+  s64 nz = (s64)v.z << FX_SHIFT;
+
+  r.x = (fx)((nx >= 0 ? (nx + (s64)root/2) : (nx - (s64)root/2)) / (s64)root);
+  r.y = (fx)((ny >= 0 ? (ny + (s64)root/2) : (ny - (s64)root/2)) / (s64)root);
+  r.z = (fx)((nz >= 0 ? (nz + (s64)root/2) : (nz - (s64)root/2)) / (s64)root);
+  return r;
 }
 
 static inline Quat quatIdentity() {
@@ -131,13 +147,16 @@ static inline Quat quatNormalize(Quat q) {
   u64 root = isqrt64(n2);
   if (root == 0) return quatIdentity();
 
-  // factor_raw is in Q16.16
-  s64 factor = ((s64)FX_ONE * (s64)FX_ONE) / (s64)root;
   Quat r;
-  r.w = (fx)(((s64)q.w * factor) >> FX_SHIFT);
-  r.x = (fx)(((s64)q.x * factor) >> FX_SHIFT);
-  r.y = (fx)(((s64)q.y * factor) >> FX_SHIFT);
-  r.z = (fx)(((s64)q.z * factor) >> FX_SHIFT);
+  s64 nw = (s64)q.w << FX_SHIFT;
+  s64 nx = (s64)q.x << FX_SHIFT;
+  s64 ny = (s64)q.y << FX_SHIFT;
+  s64 nz = (s64)q.z << FX_SHIFT;
+
+  r.w = (fx)((nw >= 0 ? (nw + (s64)root/2) : (nw - (s64)root/2)) / (s64)root);
+  r.x = (fx)((nx >= 0 ? (nx + (s64)root/2) : (nx - (s64)root/2)) / (s64)root);
+  r.y = (fx)((ny >= 0 ? (ny + (s64)root/2) : (ny - (s64)root/2)) / (s64)root);
+  r.z = (fx)((nz >= 0 ? (nz + (s64)root/2) : (nz - (s64)root/2)) / (s64)root);
   return r;
 }
 
@@ -148,6 +167,8 @@ static inline Vec3 quatRotate(Quat q, Vec3 v) {
   Vec3 uuv = cross3(u, uv);
 
   // v' = v + 2*w*(u × v) + 2*(u × (u × v))
+  // The scale factor 2*(u x (u x v)) can be written as scale3(uuv, (fx)(FX_ONE << 1))
+  // because uuv is (u x (u x v)).
   return add3(
     v,
     add3(
