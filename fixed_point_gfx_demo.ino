@@ -276,34 +276,27 @@ static const Edge squareEdges[] = {
   {0,1}, {1,2}, {2,3}, {3,0}
 };
 
-// ------------------ State ------------------
+// ------------------ Rendering Engine ------------------
 
-Mat2D gSquareRot;
-Quat gCubeRot;
+struct Camera {
+  fx focal;
+  fx nearZ;
+};
 
-constexpr fx CUBE_SCALE = (fx)(FX_ONE + (FX_ONE / 2)); // 1.5
-constexpr fx CUBE_Z = (fxFromInt(8));
-constexpr fx FOCAL = (fxFromInt(120));
-constexpr fx NEAR_Z = (fxFromInt(1));
+struct Viewport {
+  int32_t cx, cy;
+};
 
-static inline Vec3 cubeTransform(Vec3 p) {
-  p = scale3(p, CUBE_SCALE);
-  p = quatRotate(gCubeRot, p);
-  p.z = fxAdd(p.z, CUBE_Z);
-  return p;
-}
-
-static inline bool project3D(Vec3 p, int16_t &sx, int16_t &sy) {
-  if (p.z <= NEAR_Z) return false;
-  fx k = fxDiv(FOCAL, p.z);
+static inline bool project3D(const Camera &cam, const Viewport &vp, Vec3 p, int16_t &sx, int16_t &sy) {
+  if (p.z < cam.nearZ) return false;
+  // Near plane clipping ensures p.z >= nearZ.
+  // Assuming nearZ >= 1, we avoid division by zero.
+  fx k = fxDiv(cam.focal, p.z);
   fx x = fxMul(p.x, k);
   fx y = fxMul(p.y, k);
 
-  int32_t cx = tft.width() / 2;
-  int32_t cy = tft.height() / 2;
-
-  sx = (int16_t)(cx + (x >> FX_SHIFT));
-  sy = (int16_t)(cy - (y >> FX_SHIFT));
+  sx = (int16_t)(vp.cx + (x >> FX_SHIFT));
+  sy = (int16_t)(vp.cy - (y >> FX_SHIFT));
   return true;
 }
 
@@ -315,24 +308,61 @@ static inline void drawWireEdge2D(Vec2 a, Vec2 b, int ox, int oy, uint16_t color
   );
 }
 
-static inline void drawWireEdge3D(Vec3 a, Vec3 b, uint16_t color) {
+static inline void drawWireEdge3D(const Camera &cam, const Viewport &vp, Vec3 a, Vec3 b, uint16_t color) {
+  // Simple near-plane clipping (Z = nearZ)
+  if (a.z < cam.nearZ && b.z < cam.nearZ) return;
+
+  if (a.z < cam.nearZ) {
+    // a is clipped, find intersection with near plane
+    fx t = fxDiv(fxSub(cam.nearZ, a.z), fxSub(b.z, a.z));
+    a.x = fxAdd(a.x, fxMul(t, fxSub(b.x, a.x)));
+    a.y = fxAdd(a.y, fxMul(t, fxSub(b.y, a.y)));
+    a.z = cam.nearZ;
+  } else if (b.z < cam.nearZ) {
+    // b is clipped, find intersection with near plane
+    fx t = fxDiv(fxSub(cam.nearZ, b.z), fxSub(a.z, b.z));
+    b.x = fxAdd(b.x, fxMul(t, fxSub(a.x, b.x)));
+    b.y = fxAdd(b.y, fxMul(t, fxSub(a.y, b.y)));
+    b.z = cam.nearZ;
+  }
+
   int16_t x0, y0, x1, y1;
-  if (!project3D(a, x0, y0)) return;
-  if (!project3D(b, x1, y1)) return;
+  if (!project3D(cam, vp, a, x0, y0)) return;
+  if (!project3D(cam, vp, b, x1, y1)) return;
   tft.drawLine(x0, y0, x1, y1, color);
 }
 
-static inline void drawAxes3D(uint16_t colorX, uint16_t colorY, uint16_t colorZ) {
+// ------------------ State ------------------
+
+Mat2D gSquareRot;
+Quat gCubeRot;
+
+constexpr fx CUBE_SCALE = (fx)(FX_ONE + (FX_ONE / 2)); // 1.5
+constexpr fx CUBE_Z = (fxFromInt(8));
+Camera gCam = { fxFromInt(120), fxFromInt(1) };
+Viewport gVp;
+
+static inline Vec3 cubeTransform(Vec3 p) {
+  p = scale3(p, CUBE_SCALE);
+  p = quatRotate(gCubeRot, p);
+  p.z = fxAdd(p.z, CUBE_Z);
+  return p;
+}
+
+static inline void drawAxes3D(const Camera &cam, const Viewport &vp, uint16_t colorX, uint16_t colorY, uint16_t colorZ) {
   Vec3 o = {0, 0, CUBE_Z};
-  drawWireEdge3D(o, add3(o, quatRotate(gCubeRot, v3(fxFromInt(2), 0, 0))), colorX);
-  drawWireEdge3D(o, add3(o, quatRotate(gCubeRot, v3(0, fxFromInt(2), 0))), colorY);
-  drawWireEdge3D(o, add3(o, quatRotate(gCubeRot, v3(0, 0, fxFromInt(2)))), colorZ);
+  drawWireEdge3D(cam, vp, o, add3(o, quatRotate(gCubeRot, v3(fxFromInt(2), 0, 0))), colorX);
+  drawWireEdge3D(cam, vp, o, add3(o, quatRotate(gCubeRot, v3(0, fxFromInt(2), 0))), colorY);
+  drawWireEdge3D(cam, vp, o, add3(o, quatRotate(gCubeRot, v3(0, 0, fxFromInt(2)))), colorZ);
 }
 
 void setup() {
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
+
+  gVp.cx = tft.width() / 2;
+  gVp.cy = tft.height() / 2;
 
   gSquareRot = mat2Identity();
   gCubeRot = quatIdentity();
@@ -390,10 +420,10 @@ static inline void drawCubeDemo() {
 
   for (unsigned i = 0; i < sizeof(cubeEdges) / sizeof(cubeEdges[0]); ++i) {
     const Edge &e = cubeEdges[i];
-    drawWireEdge3D(tv[e.a], tv[e.b], TFT_WHITE);
+    drawWireEdge3D(gCam, gVp, tv[e.a], tv[e.b], TFT_WHITE);
   }
 
-  drawAxes3D(TFT_RED, TFT_GREEN, TFT_BLUE);
+  drawAxes3D(gCam, gVp, TFT_RED, TFT_GREEN, TFT_BLUE);
 }
 
 void loop() {
