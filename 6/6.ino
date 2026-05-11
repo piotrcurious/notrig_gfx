@@ -10,8 +10,9 @@
 #define DEMO_FRACTAL_TREE 2
 #define DEMO_SHADED_ICO    3
 #define DEMO_MORPH         4
+#define DEMO_MENGER        5
 
-#define ACTIVE_DEMO DEMO_FRACTAL_TREE
+#define ACTIVE_DEMO DEMO_MENGER
 
 SymbolicVM engine;
 MorphismStack worldStack;
@@ -35,6 +36,8 @@ void loop() {
         runShadedIco(frame);
     #elif ACTIVE_DEMO == DEMO_MORPH
         runMorph(frame);
+    #elif ACTIVE_DEMO == DEMO_MENGER
+        runMenger(frame);
     #endif
 
     frame++;
