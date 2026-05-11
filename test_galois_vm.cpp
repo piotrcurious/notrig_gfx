@@ -5,8 +5,8 @@
 
 #define SCALE 1024
 #define MAX_LAYERS 16
-#define MAX_TERMS_PER_VEC 32
-#define MAX_DEPTH 8
+#define MAX_TERMS_PER_VEC 16
+#define MAX_DEPTH 6
 
 const int16_t SIN_TABLE[91] = {
     0, 18, 36, 54, 71, 89, 107, 125, 143, 160,
@@ -70,13 +70,10 @@ struct AlgebraicVec3 {
 };
 
 struct MorphismStack {
-    int32_t cos_val[MAX_LAYERS];
-    int32_t sin_val[MAX_LAYERS];
-    int current_layers = 0;
+    int32_t val1[MAX_LAYERS]; int32_t val2[MAX_LAYERS]; int current_layers = 0;
     int pushRotation(int32_t angleDegrees) {
         if (current_layers >= MAX_LAYERS) return -1;
-        cos_val[current_layers] = fx_cos(angleDegrees);
-        sin_val[current_layers] = fx_sin(angleDegrees);
+        val1[current_layers] = fx_cos(angleDegrees); val2[current_layers] = fx_sin(angleDegrees);
         return current_layers++;
     }
     void reset() { current_layers = 0; }
@@ -95,12 +92,23 @@ public:
         }
         v.simplify();
     }
-    void add(AlgebraicVec3 &out, const AlgebraicVec3 &a, const AlgebraicVec3 &b) {
+    void morph(AlgebraicVec3 &out, const AlgebraicVec3 &a, const AlgebraicVec3 &b, int32_t alpha) {
         out.num_terms = 0;
-        int n = a.num_terms; if (n > MAX_TERMS_PER_VEC) n = MAX_TERMS_PER_VEC;
-        for (int i = 0; i < n; i++) out.terms[out.num_terms++] = a.terms[i];
-        int m = b.num_terms; if (out.num_terms + m > MAX_TERMS_PER_VEC) m = MAX_TERMS_PER_VEC - out.num_terms;
-        for (int i = 0; i < m; i++) out.terms[out.num_terms++] = b.terms[i];
+        int32_t inv_alpha = 1024 - alpha;
+        for (int i = 0; i < a.num_terms && out.num_terms < MAX_TERMS_PER_VEC; i++) {
+            SymbolicTerm t = a.terms[i];
+            t.v[0] = (int32_t)(((int64_t)t.v[0] * inv_alpha) >> 10);
+            t.v[1] = (int32_t)(((int64_t)t.v[1] * inv_alpha) >> 10);
+            t.v[2] = (int32_t)(((int64_t)t.v[2] * inv_alpha) >> 10);
+            out.terms[out.num_terms++] = t;
+        }
+        for (int i = 0; i < b.num_terms && out.num_terms < MAX_TERMS_PER_VEC; i++) {
+            SymbolicTerm t = b.terms[i];
+            t.v[0] = (int32_t)(((int64_t)t.v[0] * alpha) >> 10);
+            t.v[1] = (int32_t)(((int64_t)t.v[1] * alpha) >> 10);
+            t.v[2] = (int32_t)(((int64_t)t.v[2] * alpha) >> 10);
+            out.terms[out.num_terms++] = t;
+        }
         out.simplify();
     }
     void collapse(const AlgebraicVec3 &v, const MorphismStack &stack, int32_t &ox, int32_t &oy, int32_t &oz) {
@@ -109,7 +117,7 @@ public:
             int64_t cx = v.terms[i].v[0], cy = v.terms[i].v[1], cz = v.terms[i].v[2];
             for (int d = 0; d < v.terms[i].depth; d++) {
                 int l = v.terms[i].layers[d]; int ax = v.terms[i].axes[d];
-                int64_t cV = stack.cos_val[l]; int64_t sV = stack.sin_val[l];
+                int64_t cV = stack.val1[l]; int64_t sV = stack.val2[l];
                 int64_t nx, ny, nz;
                 if (ax == 2) { nx = (cx * cV - cy * sV + 512) >> 10; ny = (cx * sV + cy * cV + 512) >> 10; nz = cz; }
                 else if (ax == 0) { nx = cx; ny = (cy * cV - cz * sV + 512) >> 10; nz = (cy * sV + cz * cV + 512) >> 10; }
@@ -121,8 +129,8 @@ public:
     }
     bool project(const AlgebraicVec3 &v, const MorphismStack &stack, int16_t &sx, int16_t &sy, int w, int h) {
         int32_t x, y, z; collapse(v, stack, x, y, z);
-        z += (500 * SCALE); if (z < 20 * SCALE) return false;
-        sx = w / 2 + (int16_t)(((int64_t)x * 400) / z); sy = h / 2 - (int16_t)(((int64_t)y * 400) / z);
+        z += (450 * SCALE); if (z < 20 * SCALE) return false;
+        sx = w / 2 + (int16_t)(((int64_t)x * 350) / z); sy = h / 2 - (int16_t)(((int64_t)y * 350) / z);
         return true;
     }
 };
@@ -131,37 +139,23 @@ RuntimeExactEngine engine;
 MorphismStack worldStack;
 TFT_eSPI tft;
 
-void drawSymbolicTree(AlgebraicVec3 base, int height, int layerL, int layerR, int depth) {
-    if (depth == 0) return;
-    AlgebraicVec3 trunkEnd = AlgebraicVec3::fromRational(0, height * SCALE, 0);
-    engine.add(trunkEnd, trunkEnd, base);
-    int16_t sx1, sy1, sx2, sy2;
-    if (engine.project(base, worldStack, sx1, sy1, tft.width(), tft.height()) &&
-        engine.project(trunkEnd, worldStack, sx2, sy2, tft.width(), tft.height())) {
-        tft.drawLine(sx1, sy1, sx2, sy2, (depth == 1) ? TFT_GREEN : TFT_BROWN);
-    }
-    AlgebraicVec3 left = AlgebraicVec3::fromRational(0, (height * 3 / 4) * SCALE, 0);
-    engine.applyRotation(left, layerL, 2); engine.add(left, left, trunkEnd);
-    AlgebraicVec3 right = AlgebraicVec3::fromRational(0, (height * 3 / 4) * SCALE, 0);
-    engine.applyRotation(right, layerR, 2); engine.add(right, right, trunkEnd);
-    drawSymbolicTree(left, height * 3 / 4, layerL, layerR, depth - 1);
-    drawSymbolicTree(right, height * 3 / 4, layerL, layerR, depth - 1);
-}
-
 int main() {
     tft.init(); tft.setRotation(1); tft.enable_framebuffer(true);
     for (int frame = 0; frame < 10; frame++) {
         tft.fillScreen(TFT_BLACK);
         worldStack.reset();
-        int lL = worldStack.pushRotation(25 + frame);
-        int lR = worldStack.pushRotation(-25 - frame);
-        int lWind = worldStack.pushRotation(frame * 2);
-        AlgebraicVec3 root = AlgebraicVec3::fromRational(0, -100 * SCALE, 0);
-        engine.applyRotation(root, lWind, 0);
-        drawSymbolicTree(root, 60, lL, lR, 5);
+        int rX = worldStack.pushRotation(frame * 5);
+        int alpha = (frame * 1024) / 10;
+        AlgebraicVec3 p1 = AlgebraicVec3::fromRational(50*SCALE, 0, 0);
+        AlgebraicVec3 p2 = AlgebraicVec3::fromRational(0, 50*SCALE, 0);
+        AlgebraicVec3 morphed;
+        engine.morph(morphed, p1, p2, alpha);
+        engine.applyRotation(morphed, rX, 0);
+        int32_t x, y, z;
+        engine.collapse(morphed, worldStack, x, y, z);
+        printf("Frame %d: alpha=%d, Collapse=[%d, %d, %d]\n", frame, alpha, x, y, z);
         char buf[64]; sprintf(buf, "frame_%03d.ppm", frame);
         tft.save_ppm(buf);
     }
-    printf("Recursive Tree Demo Generated.\n");
     return 0;
 }
