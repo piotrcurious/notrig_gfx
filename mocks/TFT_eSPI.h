@@ -39,6 +39,19 @@ public:
             draw_line_fb(x0, y0, x1, y1, color);
         }
     }
+    void fillCircle(int16_t x, int16_t y, int16_t r, uint16_t color) {
+        if (!use_framebuffer) return;
+        for (int i = -r; i <= r; i++) {
+            for (int j = -r; j <= r; j++) {
+                if (i*i + j*j <= r*r) {
+                    int px = x + i, py = y + j;
+                    if (px >= 0 && px < _width && py >= 0 && py < _height) {
+                        framebuffer[py * _width + px] = color;
+                    }
+                }
+            }
+        }
+    }
     void setTextColor(uint16_t fg, uint16_t bg) {}
     void setCursor(int16_t x, int16_t y) {}
     void print(const char* s) {}

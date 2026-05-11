@@ -1,26 +1,13 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
-
-/*
- * GALOIS FIELD VIRTUAL MACHINE - 3D SYMBOLIC ENGINE
- *
- * This engine treats 3D space as an algebraic field extension.
- * Points are "Programs" (AlgebraicVec3) composed of Symbolic Terms.
- * Rotations are "Instructions" (applyRotation) that lift points into
- * transcendental layers without immediate numerical collapse.
- *
- * The hierarchy:
- * 1. Base Field: Rational integers (int32_t * 1024)
- * 2. Symbolic Layers: Rotation residuals (cos/sin coefficients)
- * 3. VM Collapse: Final projection onto the screen 2D plane.
- */
+#include <vector>
+#include <cmath>
 
 #define SCALE 1024
 #define MAX_LAYERS 16
 #define MAX_TERMS_PER_VEC 8
 #define MAX_DEPTH 6
 
-// Fixed-point sine table (0-90 degrees, scaled by 1024)
 const int16_t SIN_TABLE[91] = {
     0, 18, 36, 54, 71, 89, 107, 125, 143, 160,
     178, 195, 213, 230, 248, 265, 282, 299, 316, 333,
@@ -44,23 +31,18 @@ int32_t fx_sin(int32_t angle) {
 
 int32_t fx_cos(int32_t angle) { return fx_sin(angle + 90); }
 
-// --- VM Data Structures ---
-
 struct SymbolicTerm {
-    int32_t v[3];           // Rational base vector
+    int32_t v[3];
     int8_t layers[MAX_DEPTH];
-    int8_t axes[MAX_DEPTH]; // 0=X, 1=Y, 2=Z
+    int8_t axes[MAX_DEPTH];
     int8_t depth = 0;
-
     SymbolicTerm() { v[0]=v[1]=v[2]=0; depth=0; }
 };
 
 struct AlgebraicVec3 {
     SymbolicTerm terms[MAX_TERMS_PER_VEC];
     int num_terms = 0;
-
     AlgebraicVec3() : num_terms(0) {}
-
     static AlgebraicVec3 fromRational(int32_t x, int32_t y, int32_t z) {
         AlgebraicVec3 res;
         res.num_terms = 1;
@@ -74,7 +56,6 @@ struct MorphismStack {
     int32_t cos_val[MAX_LAYERS];
     int32_t sin_val[MAX_LAYERS];
     int current_layers = 0;
-
     int pushRotation(int32_t angleDegrees) {
         if (current_layers >= MAX_LAYERS) return -1;
         cos_val[current_layers] = fx_cos(angleDegrees);
@@ -84,11 +65,8 @@ struct MorphismStack {
     void reset() { current_layers = 0; }
 };
 
-// --- VM Implementation ---
-
 class RuntimeExactEngine {
 public:
-    // Instruction: ROTATE (Lifts the vector into a symbolic layer)
     void applyRotation(AlgebraicVec3 &v, int layer, int axis) {
         if (layer < 0 || layer >= MAX_LAYERS) return;
         for (int i = 0; i < v.num_terms; i++) {
@@ -99,8 +77,6 @@ public:
             }
         }
     }
-
-    // Instruction: ADD (Algebraic composition)
     void add(AlgebraicVec3 &out, const AlgebraicVec3 &a, const AlgebraicVec3 &b) {
         out.num_terms = 0;
         for (int i = 0; i < a.num_terms && out.num_terms < MAX_TERMS_PER_VEC; i++)
@@ -108,8 +84,6 @@ public:
         for (int i = 0; i < b.num_terms && out.num_terms < MAX_TERMS_PER_VEC; i++)
             out.terms[out.num_terms++] = b.terms[i];
     }
-
-    // Instruction: COLLAPSE (Evaluates the algebraic expression)
     void collapse(const AlgebraicVec3 &v, const MorphismStack &stack, int32_t &ox, int32_t &oy, int32_t &oz) {
         ox = oy = oz = 0;
         for (int i = 0; i < v.num_terms; i++) {
@@ -120,29 +94,18 @@ public:
                 int64_t cV = stack.cos_val[l];
                 int64_t sV = stack.sin_val[l];
                 int64_t nx, ny, nz;
-                if (ax == 2) { // Z
-                    nx = (cx * cV - cy * sV) / SCALE;
-                    ny = (cx * sV + cy * cV) / SCALE;
-                    nz = cz;
-                } else if (ax == 0) { // X
-                    nx = cx;
-                    ny = (cy * cV - cz * sV) / SCALE;
-                    nz = (cy * sV + cz * cV) / SCALE;
-                } else { // Y
-                    nx = (cx * cV + cz * sV) / SCALE;
-                    ny = cy;
-                    nz = (-cx * sV + cz * cV) / SCALE;
-                }
+                if (ax == 2) { nx = (cx * cV - cy * sV) / SCALE; ny = (cx * sV + cy * cV) / SCALE; nz = cz; }
+                else if (ax == 0) { nx = cx; ny = (cy * cV - cz * sV) / SCALE; nz = (cy * sV + cz * cV) / SCALE; }
+                else { nx = (cx * cV + cz * sV) / SCALE; ny = cy; nz = (-cx * sV + cz * cV) / SCALE; }
                 cx = nx; cy = ny; cz = nz;
             }
             ox += (int32_t)cx; oy += (int32_t)cy; oz += (int32_t)cz;
         }
     }
-
     bool project(const AlgebraicVec3 &v, const MorphismStack &stack, int16_t &sx, int16_t &sy, int w, int h) {
         int32_t x, y, z;
         collapse(v, stack, x, y, z);
-        z += (450 * SCALE); // Viewport Z offset
+        z += (450 * SCALE);
         if (z < 20 * SCALE) return false;
         sx = w / 2 + (int16_t)(((int64_t)x * 350) / z);
         sy = h / 2 - (int16_t)(((int64_t)y * 350) / z);
@@ -150,45 +113,29 @@ public:
     }
 };
 
-// --- Global State ---
-
 RuntimeExactEngine engine;
 MorphismStack worldStack;
 TFT_eSPI tft;
 
-void setup() {
-    tft.init();
-    tft.setRotation(1);
-    tft.fillScreen(TFT_BLACK);
-}
-
-void loop() {
-    static int frame = 0;
+void render(int frame) {
     tft.fillScreen(TFT_BLACK);
     worldStack.reset();
-
-    // 1. Push Morphisms (Runtime Angle State)
     int lEarth = worldStack.pushRotation(frame % 360);
     int lMoon = worldStack.pushRotation((frame * 4) % 360);
     int lSat = worldStack.pushRotation((frame * 12) % 360);
-    int lIncline = worldStack.pushRotation(23); // Tilt of the system
+    int lIncline = worldStack.pushRotation(23);
 
-    // 2. Define Algebraic Geometry "Programs"
     AlgebraicVec3 sun = AlgebraicVec3::fromRational(0, 0, 0);
-
-    // Earth = Translate(120,0,0) -> RotateZ(lEarth) -> RotateX(lIncline)
     AlgebraicVec3 earth = AlgebraicVec3::fromRational(120 * SCALE, 0, 0);
     engine.applyRotation(earth, lEarth, 2);
     engine.applyRotation(earth, lIncline, 0);
 
-    // Moon = Earth + (Translate(40,0,0) -> RotateZ(lMoon) -> RotateZ(lEarth) -> RotateX(lIncline))
     AlgebraicVec3 moonRel = AlgebraicVec3::fromRational(40 * SCALE, 0, 0);
     engine.applyRotation(moonRel, lMoon, 2);
     engine.applyRotation(moonRel, lEarth, 2);
     engine.applyRotation(moonRel, lIncline, 0);
     AlgebraicVec3 moon; engine.add(moon, earth, moonRel);
 
-    // Satellite = Moon + (Translate(0,15,0) -> RotateX(lSat) -> RotateZ(lMoon) -> RotateZ(lEarth) -> RotateX(lIncline))
     AlgebraicVec3 satRel = AlgebraicVec3::fromRational(0, 15 * SCALE, 0);
     engine.applyRotation(satRel, lSat, 0);
     engine.applyRotation(satRel, lMoon, 2);
@@ -196,19 +143,28 @@ void loop() {
     engine.applyRotation(satRel, lIncline, 0);
     AlgebraicVec3 sat; engine.add(sat, moon, satRel);
 
-    // 3. Render via VM Collapse
     auto draw = [&](AlgebraicVec3 &p, uint16_t color, int size) {
         int16_t sx, sy;
         if (engine.project(p, worldStack, sx, sy, tft.width(), tft.height())) {
             tft.fillCircle(sx, sy, size, color);
         }
     };
-
     draw(sun, TFT_YELLOW, 10);
     draw(earth, TFT_BLUE, 5);
     draw(moon, TFT_WHITE, 3);
     draw(sat, TFT_RED, 1);
+}
 
-    frame++;
-    delay(20);
+int main() {
+    tft.init();
+    tft.setRotation(1);
+    tft.enable_framebuffer(true);
+    for (int frame = 0; frame < 20; frame++) {
+        render(frame * 5);
+        char buf[64];
+        sprintf(buf, "frame_%03d.ppm", frame);
+        tft.save_ppm(buf);
+    }
+    printf("Solar System Demo Generated.\n");
+    return 0;
 }
