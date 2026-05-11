@@ -2,6 +2,7 @@
 #define SYMBOLIC_VM_H
 
 #include <Arduino.h>
+#include <TFT_eSPI.h>
 
 #define SCALE 1024
 #define MAX_LAYERS 16
@@ -21,14 +22,24 @@ static const int16_t SIN_TABLE[91] = {
     1014, 1017, 1020, 1022, 1023, 1024, 1024, 1024, 1024, 1024, 1024
 };
 
-static inline int32_t fx_sin(int32_t angle) {
-    angle %= 360; if (angle < 0) angle += 360;
-    if (angle <= 90) return SIN_TABLE[angle];
-    if (angle <= 180) return SIN_TABLE[180 - angle];
-    if (angle <= 270) return -SIN_TABLE[angle - 180];
-    return -SIN_TABLE[360 - angle];
+static inline int32_t fx_sin(int32_t angle_q4) {
+    // Input is angle in degrees * 16 (Q4 fixed point)
+    int32_t angle = angle_q4 >> 4;
+    int32_t fract = angle_q4 & 0xF;
+
+    auto get_sin = [](int32_t a) -> int32_t {
+        a %= 360; if (a < 0) a += 360;
+        if (a <= 90) return SIN_TABLE[a];
+        if (a <= 180) return SIN_TABLE[180 - a];
+        if (a <= 270) return -SIN_TABLE[a - 180];
+        return -SIN_TABLE[360 - a];
+    };
+
+    int32_t s1 = get_sin(angle);
+    int32_t s2 = get_sin(angle + 1);
+    return s1 + ((s2 - s1) * fract >> 4);
 }
-static inline int32_t fx_cos(int32_t angle) { return fx_sin(angle + 90); }
+static inline int32_t fx_cos(int32_t angle_q4) { return fx_sin(angle_q4 + (90 << 4)); }
 
 // --- VM Data Structures ---
 struct SymbolicTerm {
@@ -77,7 +88,12 @@ struct MorphismStack {
     int32_t val1[MAX_LAYERS]; int32_t val2[MAX_LAYERS]; int current_layers = 0;
     int pushRotation(int32_t angleDegrees) {
         if (current_layers >= MAX_LAYERS) return -1;
-        val1[current_layers] = fx_cos(angleDegrees); val2[current_layers] = fx_sin(angleDegrees);
+        val1[current_layers] = fx_cos(angleDegrees << 4); val2[current_layers] = fx_sin(angleDegrees << 4);
+        return current_layers++;
+    }
+    int pushRotationQ4(int32_t angleQ4) {
+        if (current_layers >= MAX_LAYERS) return -1;
+        val1[current_layers] = fx_cos(angleQ4); val2[current_layers] = fx_sin(angleQ4);
         return current_layers++;
     }
     int pushScale(int32_t scaleFactor) {
@@ -179,11 +195,44 @@ public:
         int32_t intensity = (int32_t)(dot >> 10);
         return intensity > 0 ? intensity : 0;
     }
-    bool project(const AlgebraicVec3 &v, const MorphismStack &stack, int16_t &sx, int16_t &sy, int w, int h) {
-        int32_t x, y, z; collapse(v, stack, x, y, z);
+    bool project(int32_t x, int32_t y, int32_t z, int16_t &sx, int16_t &sy, int w, int h) {
         z += (450 * SCALE); if (z < 20 * SCALE) return false;
         sx = w / 2 + (int16_t)(((int64_t)x * 350) / z); sy = h / 2 - (int16_t)(((int64_t)y * 350) / z);
         return true;
+    }
+
+    bool project(const AlgebraicVec3 &v, const MorphismStack &stack, int16_t &sx, int16_t &sy, int w, int h) {
+        int32_t x, y, z;
+        collapse(v, stack, x, y, z);
+        return project(x, y, z, sx, sy, w, h);
+    }
+
+    void drawClippedLine(TFT_eSPI &tft, const AlgebraicVec3 &v1, const AlgebraicVec3 &v2, const MorphismStack &stack, uint16_t color) {
+        int32_t x1, y1, z1, x2, y2, z2;
+        collapse(v1, stack, x1, y1, z1);
+        collapse(v2, stack, x2, y2, z2);
+
+        int32_t nz1 = z1 + 450*SCALE, nz2 = z2 + 450*SCALE;
+        int32_t nearZ = 20 * SCALE;
+        if (nz1 < nearZ && nz2 < nearZ) return;
+
+        if (nz1 < nearZ) {
+            int64_t t = ((int64_t)(nearZ - nz1) << 10) / (nz2 - nz1);
+            x1 = x1 + (int32_t)(((int64_t)(x2 - x1) * t) >> 10);
+            y1 = y1 + (int32_t)(((int64_t)(y2 - y1) * t) >> 10);
+            z1 = nearZ - 450*SCALE;
+        } else if (nz2 < nearZ) {
+            int64_t t = ((int64_t)(nearZ - nz2) << 10) / (nz1 - nz2);
+            x2 = x2 + (int32_t)(((int64_t)(x1 - x2) * t) >> 10);
+            y2 = y2 + (int32_t)(((int64_t)(y1 - y2) * t) >> 10);
+            z2 = nearZ - 450*SCALE;
+        }
+
+        int16_t sx1, sy1, sx2, sy2;
+        if (project(x1, y1, z1, sx1, sy1, tft.width(), tft.height()) &&
+            project(x2, y2, z2, sx2, sy2, tft.width(), tft.height())) {
+            tft.drawLine(sx1, sy1, sx2, sy2, color);
+        }
     }
 };
 

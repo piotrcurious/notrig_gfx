@@ -34,16 +34,49 @@ void runSolarSystem(int frame) {
     draw(sun, TFT_YELLOW, 8); draw(earth, TFT_BLUE, 4); draw(moon, TFT_WHITE, 2); draw(sat, TFT_RED, 1);
 }
 
+// 5. Symbolic Fractal Cube Demo (Menger inspired)
+void drawMenger(AlgebraicVec3 center, int size, int depth, int rL) {
+    if (depth == 0) {
+        // Draw a simple symbolic "dot" or small cube frame
+        int16_t sx, sy;
+        if (engine.project(center, worldStack, sx, sy, tft.width(), tft.height())) {
+            tft.fillCircle(sx, sy, 1, TFT_GOLD);
+        }
+        return;
+    }
+
+    int nextSize = size / 3;
+    int s = size * SCALE;
+
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int z = -1; z <= 1; z++) {
+                if (abs(x) + abs(y) + abs(z) > 1) { // Menger-like pattern
+                    AlgebraicVec3 nextPos = AlgebraicVec3::fromRational(x * nextSize * SCALE, y * nextSize * SCALE, z * nextSize * SCALE);
+                    engine.applyRotation(nextPos, rL, 2);
+                    engine.add(nextPos, nextPos, center);
+                    drawMenger(nextPos, nextSize, depth - 1, rL);
+                }
+            }
+        }
+    }
+}
+
+void runMenger(int frame) {
+    worldStack.reset();
+    int rL = worldStack.pushRotation(frame * 2);
+    AlgebraicVec3 root = AlgebraicVec3::fromRational(0, 0, 0);
+    drawMenger(root, 60, 2, rL);
+}
+
 // 2. Recursive Tree Demo
 void drawRecursiveTree(AlgebraicVec3 base, int height, int lL, int lR, int depth) {
     if (depth == 0) return;
     AlgebraicVec3 end = AlgebraicVec3::fromRational(0, height * SCALE, 0);
     engine.add(end, end, base);
-    int16_t sx1, sy1, sx2, sy2;
-    if (engine.project(base, worldStack, sx1, sy1, tft.width(), tft.height()) &&
-        engine.project(end, worldStack, sx2, sy2, tft.width(), tft.height())) {
-        tft.drawLine(sx1, sy1, sx2, sy2, depth == 1 ? TFT_GREEN : TFT_BROWN);
-    }
+
+    engine.drawClippedLine(tft, base, end, worldStack, depth == 1 ? TFT_GREEN : TFT_BROWN);
+
     AlgebraicVec3 left = AlgebraicVec3::fromRational(0, (height*3/4)*SCALE, 0);
     engine.applyRotation(left, lL, 2); engine.add(left, left, end);
     AlgebraicVec3 right = AlgebraicVec3::fromRational(0, (height*3/4)*SCALE, 0);
@@ -54,8 +87,8 @@ void drawRecursiveTree(AlgebraicVec3 base, int height, int lL, int lR, int depth
 
 void runFractalTree(int frame) {
     worldStack.reset();
-    int lL = worldStack.pushRotation(25 + fx_sin(frame)/64);
-    int lR = worldStack.pushRotation(-25 + fx_cos(frame)/64);
+    int lL = worldStack.pushRotationQ4((25 << 4) + (fx_sin(frame << 4) >> 6));
+    int lR = worldStack.pushRotationQ4((-25 << 4) + (fx_cos(frame << 4) >> 6));
     AlgebraicVec3 root = AlgebraicVec3::fromRational(0, -80*SCALE, 0);
     drawRecursiveTree(root, 50, lL, lR, 5);
 }
@@ -81,7 +114,8 @@ void runShadedIco(int frame) {
             int16_t sx[3], sy[3]; bool ok=true;
             for(int j=0; j<3; j++) if(!engine.project(v[j], worldStack, sx[j], sy[j], tft.width(), tft.height())) ok=false;
             if(ok) {
-                uint16_t color = tft.color565(intensity/4, intensity/4, intensity/2);
+                uint8_t c = (intensity > 1023) ? 255 : (intensity >> 2);
+                uint16_t color = tft.color565(c/2, c/2, c);
                 for(int j=0; j<3; j++) tft.drawLine(sx[j], sy[j], sx[(j+1)%3], sy[(j+1)%3], color);
             }
         }
