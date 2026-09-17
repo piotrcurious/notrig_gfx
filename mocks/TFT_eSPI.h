@@ -64,6 +64,20 @@ public:
         return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
     }
 
+    void pushImage(int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *data) {
+        if (use_framebuffer && data) {
+            for (int32_t j = 0; j < h; ++j) {
+                for (int32_t i = 0; i < w; ++i) {
+                    int px = x + i;
+                    int py = y + j;
+                    if (px >= 0 && px < _width && py >= 0 && py < _height) {
+                        framebuffer[py * _width + px] = data[j * w + i];
+                    }
+                }
+            }
+        }
+    }
+
     // Mock helpers
     void clear_mock_data() {
         lines.clear();

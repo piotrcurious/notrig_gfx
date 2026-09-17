@@ -12,9 +12,11 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <stdlib.h>
+#include <string.h>
+#include <new>
 
 TFT_eSPI tft;
-TFT_eSprite sprite = TFT_eSprite(&tft);
 
 using fx = int32_t;
 using s64 = int64_t;
@@ -239,6 +241,112 @@ static inline Quat quatFromAxisT(Vec3 axisUnit, fx t) {
   };
 }
 
+// ------------------ Tiled Rasterizer Engine ------------------
+
+struct Tile {
+    uint16_t x0, y0, w, h;
+    uint16_t *buf;
+    bool dirty_curr;
+    bool dirty_prev;
+
+    Tile() : x0(0), y0(0), w(0), h(0), buf(nullptr), dirty_curr(false), dirty_prev(false) {}
+
+    void init(uint16_t _x0, uint16_t _y0, uint16_t _w, uint16_t _h) {
+        x0 = _x0; y0 = _y0; w = _w; h = _h;
+        size_t n = (size_t)w * (size_t)h;
+        if (buf) free(buf);
+        buf = (uint16_t*) malloc(n * sizeof(uint16_t));
+        dirty_curr = true;
+        dirty_prev = true;
+        if (buf) memset(buf, 0, n * sizeof(uint16_t));
+    }
+
+    void prepareFrame() {
+        dirty_prev = dirty_curr;
+        dirty_curr = false;
+        if (buf) memset(buf, 0, (size_t)w * (size_t)h * sizeof(uint16_t));
+    }
+};
+
+class TileManager {
+public:
+    uint16_t screen_w, screen_h, tile_size;
+    uint16_t cols, rows;
+    Tile *tiles;
+
+    TileManager() : screen_w(0), screen_h(0), tile_size(0), cols(0), rows(0), tiles(nullptr) {}
+
+    void init(uint16_t sw, uint16_t sh, uint16_t tsize) {
+        screen_w = sw; screen_h = sh; tile_size = tsize;
+        cols = (screen_w + tile_size - 1) / tile_size;
+        rows = (screen_h + tile_size - 1) / tile_size;
+        tiles = (Tile*) malloc(sizeof(Tile) * cols * rows);
+        for (uint16_t r = 0; r < rows; ++r) {
+            for (uint16_t c = 0; c < cols; ++c) {
+                uint16_t x0 = c * tile_size;
+                uint16_t y0 = r * tile_size;
+                uint16_t tw = (x0 + tile_size <= screen_w) ? tile_size : (screen_w - x0);
+                uint16_t th = (y0 + tile_size <= screen_h) ? tile_size : (screen_h - y0);
+                new (&tiles[r * cols + c]) Tile();
+                tiles[r * cols + c].init(x0, y0, tw, th);
+            }
+        }
+    }
+
+    Tile* tileAtIdx(uint16_t tx, uint16_t ty) {
+        if (tx >= cols || ty >= rows) return nullptr;
+        return &tiles[ty * cols + tx];
+    }
+
+    void writePixelGlobal(int16_t x, int16_t y, uint16_t color) {
+        if (x < 0 || y < 0 || x >= (int)screen_w || y >= (int)screen_h) return;
+        uint16_t tx = (uint16_t)(x / tile_size);
+        uint16_t ty = (uint16_t)(y / tile_size);
+        uint16_t lx = (uint16_t)(x - tx * tile_size);
+        uint16_t ly = (uint16_t)(y - ty * tile_size);
+
+        Tile* t = tileAtIdx(tx, ty);
+        if (!t || !t->buf) return;
+        t->buf[(size_t)ly * (size_t)t->w + (size_t)lx] = color;
+        t->dirty_curr = true;
+    }
+
+    void drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
+        if ((x0 < 0 && x1 < 0) || (x0 >= (int)screen_w && x1 >= (int)screen_w) ||
+            (y0 < 0 && y1 < 0) || (y0 >= (int)screen_h && y1 >= (int)screen_h)) return;
+
+        int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy, e2;
+
+        while (true) {
+            writePixelGlobal(x0, y0, color);
+            if (x0 == x1 && y0 == y1) break;
+            e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    void startFrame() {
+        uint32_t count = (uint32_t)cols * rows;
+        for (uint32_t i = 0; i < count; ++i) tiles[i].prepareFrame();
+    }
+
+    void flush(TFT_eSPI &dev) {
+        uint32_t total = (uint32_t)cols * rows;
+        for (uint32_t i = 0; i < total; ++i) {
+            Tile &t = tiles[i];
+            if (t.dirty_curr || t.dirty_prev) {
+                dev.pushImage(t.x0, t.y0, t.w, t.h, t.buf);
+            }
+        }
+    }
+};
+
+static TileManager g_tile_manager;
+constexpr uint16_t TILE_SIZE = 32;
+
 // ------------------ Demo geometry ------------------
 
 struct Tri {
@@ -302,7 +410,7 @@ static inline bool project3D(const Camera &cam, const Viewport &vp, Vec3 p, int1
 }
 
 static inline void drawWireEdge2D(Vec2 a, Vec2 b, int ox, int oy, uint16_t color) {
-  sprite.drawLine(
+  g_tile_manager.drawLine(
     ox + (a.x >> FX_SHIFT), oy + (a.y >> FX_SHIFT),
     ox + (b.x >> FX_SHIFT), oy + (b.y >> FX_SHIFT),
     color
@@ -330,7 +438,7 @@ static inline void drawWireEdge3D(const Camera &cam, const Viewport &vp, Vec3 a,
   int16_t x0, y0, x1, y1;
   if (!project3D(cam, vp, a, x0, y0)) return;
   if (!project3D(cam, vp, b, x1, y1)) return;
-  sprite.drawLine(x0, y0, x1, y1, color);
+  g_tile_manager.drawLine(x0, y0, x1, y1, color);
 }
 
 // ------------------ State ------------------
@@ -362,7 +470,7 @@ void setup() {
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
 
-  sprite.createSprite(tft.width(), tft.height());
+  g_tile_manager.init(tft.width(), tft.height(), TILE_SIZE);
 
   gVp.cx = tft.width() / 2;
   gVp.cy = tft.height() / 2;
@@ -397,8 +505,8 @@ static inline void draw2DSquareDemo() {
   }
 
   // Crosshair
-  sprite.drawLine(ox - 28, oy, ox + 28, oy, TFT_DARKGREY);
-  sprite.drawLine(ox, oy - 28, ox, oy + 28, TFT_DARKGREY);
+  g_tile_manager.drawLine(ox - 28, oy, ox + 28, oy, TFT_DARKGREY);
+  g_tile_manager.drawLine(ox, oy - 28, ox, oy + 28, TFT_DARKGREY);
 }
 
 static inline void updateCubeRotation() {
@@ -430,17 +538,12 @@ static inline void drawCubeDemo() {
 }
 
 void loop() {
-  sprite.fillSprite(TFT_BLACK);
+  g_tile_manager.startFrame();
 
   draw2DSquareDemo();
   drawCubeDemo();
 
-  // Simple on-screen label
-  sprite.setTextColor(TFT_YELLOW, TFT_BLACK);
-  sprite.setCursor(5, 5);
-  sprite.print("Fixed-point 2D/3D demo");
-
-  sprite.pushSprite(0, 0);
+  g_tile_manager.flush(tft);
 
   delay(16);
 }
