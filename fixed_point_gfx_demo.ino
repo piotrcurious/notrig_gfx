@@ -48,11 +48,13 @@ static inline fx fxAbs(fx v) { return v < 0 ? -v : v; }
 
 static u64 isqrt64(u64 x) {
   // Integer square root: floor(sqrt(x))
+  if (x == 0) return 0;
   u64 op = x;
   u64 res = 0;
-  u64 one = (u64)1 << 62; // second-to-top bit
 
-  while (one > op) one >>= 2;
+  // Use hardware bit-counting (GCC count-leading-zeros) for instant alignment
+  int shift = 62 - (__builtin_clzll(op) & ~1);
+  u64 one = (u64)1 << shift;
 
   while (one != 0) {
     if (op >= res + one) {
@@ -229,6 +231,8 @@ static inline Mat2D rot2FromT(fx t) {
 
 static inline Quat quatFromAxisT(Vec3 axisUnit, fx t) {
   // axisUnit should be normalized.
+  // Note: t = tan(theta/4) yields a quaternion rotating by angle theta around axisUnit,
+  // since the Weierstrass half-angle substitution here calculates w = cos(2*phi) and s = sin(2*phi) where t = tan(phi).
   fx t2 = fxMul(t, t);
   fx den = fxAdd(FX_ONE, t2);
   fx w = fxDiv(fxSub(FX_ONE, t2), den);
@@ -538,6 +542,8 @@ static inline void drawCubeDemo() {
 }
 
 void loop() {
+  uint32_t tStart = millis();
+
   g_tile_manager.startFrame();
 
   draw2DSquareDemo();
@@ -545,5 +551,8 @@ void loop() {
 
   g_tile_manager.flush(tft);
 
-  delay(16);
+  uint32_t tElapsed = millis() - tStart;
+  if (tElapsed < 16) {
+    delay(16 - tElapsed);
+  }
 }
