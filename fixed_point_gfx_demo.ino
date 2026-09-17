@@ -14,6 +14,7 @@
 #include <TFT_eSPI.h>
 
 TFT_eSPI tft;
+TFT_eSprite sprite = TFT_eSprite(&tft);
 
 using fx = int32_t;
 using s64 = int64_t;
@@ -22,7 +23,7 @@ using u64 = uint64_t;
 constexpr int FX_SHIFT = 16;
 constexpr fx FX_ONE = (fx)1 << FX_SHIFT;
 
-static constexpr inline fx fxFromInt(int32_t v) { return (fx)(v << FX_SHIFT); }
+static constexpr inline fx fxFromInt(int32_t v) { return (fx)((s64)v * (1LL << FX_SHIFT)); }
 static constexpr inline fx fxFromRaw(int32_t raw) { return raw; }
 static constexpr inline fx fxAdd(fx a, fx b) { return a + b; }
 static constexpr inline fx fxSub(fx a, fx b) { return a - b; }
@@ -33,7 +34,7 @@ static inline fx fxMul(fx a, fx b) {
 
 static inline fx fxDiv(fx a, fx b) {
   if (b == 0) return 0; // Basic safety
-  s64 numerator = (s64)a << FX_SHIFT;
+  s64 numerator = (s64)a * (1LL << FX_SHIFT);
   if ((numerator ^ b) >= 0) {
     return (fx)((numerator + (b / 2)) / b);
   } else {
@@ -114,9 +115,9 @@ static inline Vec3 normalize3(Vec3 v) {
   if (root == 0) return {0, 0, 0};
 
   Vec3 r;
-  s64 nx = (s64)v.x << FX_SHIFT;
-  s64 ny = (s64)v.y << FX_SHIFT;
-  s64 nz = (s64)v.z << FX_SHIFT;
+  s64 nx = (s64)v.x * (1LL << FX_SHIFT);
+  s64 ny = (s64)v.y * (1LL << FX_SHIFT);
+  s64 nz = (s64)v.z * (1LL << FX_SHIFT);
 
   r.x = (fx)((nx >= 0 ? (nx + (s64)root/2) : (nx - (s64)root/2)) / (s64)root);
   r.y = (fx)((ny >= 0 ? (ny + (s64)root/2) : (ny - (s64)root/2)) / (s64)root);
@@ -148,10 +149,10 @@ static inline Quat quatNormalize(Quat q) {
   if (root == 0) return quatIdentity();
 
   Quat r;
-  s64 nw = (s64)q.w << FX_SHIFT;
-  s64 nx = (s64)q.x << FX_SHIFT;
-  s64 ny = (s64)q.y << FX_SHIFT;
-  s64 nz = (s64)q.z << FX_SHIFT;
+  s64 nw = (s64)q.w * (1LL << FX_SHIFT);
+  s64 nx = (s64)q.x * (1LL << FX_SHIFT);
+  s64 ny = (s64)q.y * (1LL << FX_SHIFT);
+  s64 nz = (s64)q.z * (1LL << FX_SHIFT);
 
   r.w = (fx)((nw >= 0 ? (nw + (s64)root/2) : (nw - (s64)root/2)) / (s64)root);
   r.x = (fx)((nx >= 0 ? (nx + (s64)root/2) : (nx - (s64)root/2)) / (s64)root);
@@ -172,8 +173,8 @@ static inline Vec3 quatRotate(Quat q, Vec3 v) {
   return add3(
     v,
     add3(
-      scale3(uv, (fx)(q.w << 1)),
-      scale3(uuv, (fx)(FX_ONE << 1))
+      scale3(uv, (fx)(q.w * 2)),
+      scale3(uuv, (fx)(FX_ONE * 2))
     )
   );
 }
@@ -218,8 +219,8 @@ static inline Mat2D rot2FromT(fx t) {
   fx t2 = fxMul(t, t);
   fx den = fxAdd(FX_ONE, t2);
   fx a = fxDiv(fxSub(FX_ONE, t2), den);
-  fx b = fxDiv((fx)(-((s64)t << 1)), den);
-  fx c = fxDiv((fx)(((s64)t) << 1), den);
+  fx b = fxDiv((fx)(-((s64)t * 2)), den);
+  fx c = fxDiv((fx)(((s64)t) * 2), den);
   fx d = a;
   return {a, b, c, d};
 }
@@ -229,7 +230,7 @@ static inline Quat quatFromAxisT(Vec3 axisUnit, fx t) {
   fx t2 = fxMul(t, t);
   fx den = fxAdd(FX_ONE, t2);
   fx w = fxDiv(fxSub(FX_ONE, t2), den);
-  fx s = fxDiv((fx)(((s64)t) << 1), den);
+  fx s = fxDiv((fx)(((s64)t) * 2), den);
   return {
     w,
     fxMul(s, axisUnit.x),
@@ -296,12 +297,12 @@ static inline bool project3D(const Camera &cam, const Viewport &vp, Vec3 p, int1
   fx y = fxMul(p.y, k);
 
   sx = (int16_t)(vp.cx + (x >> FX_SHIFT));
-  sy = (int16_t)(vp.cy - (y >> FX_SHIFT));
+  sy = (int16_t)(vp.cy + (y >> FX_SHIFT));
   return true;
 }
 
 static inline void drawWireEdge2D(Vec2 a, Vec2 b, int ox, int oy, uint16_t color) {
-  tft.drawLine(
+  sprite.drawLine(
     ox + (a.x >> FX_SHIFT), oy + (a.y >> FX_SHIFT),
     ox + (b.x >> FX_SHIFT), oy + (b.y >> FX_SHIFT),
     color
@@ -329,7 +330,7 @@ static inline void drawWireEdge3D(const Camera &cam, const Viewport &vp, Vec3 a,
   int16_t x0, y0, x1, y1;
   if (!project3D(cam, vp, a, x0, y0)) return;
   if (!project3D(cam, vp, b, x1, y1)) return;
-  tft.drawLine(x0, y0, x1, y1, color);
+  sprite.drawLine(x0, y0, x1, y1, color);
 }
 
 // ------------------ State ------------------
@@ -360,6 +361,8 @@ void setup() {
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
+
+  sprite.createSprite(tft.width(), tft.height());
 
   gVp.cx = tft.width() / 2;
   gVp.cy = tft.height() / 2;
@@ -394,8 +397,8 @@ static inline void draw2DSquareDemo() {
   }
 
   // Crosshair
-  tft.drawLine(ox - 28, oy, ox + 28, oy, TFT_DARKGREY);
-  tft.drawLine(ox, oy - 28, ox, oy + 28, TFT_DARKGREY);
+  sprite.drawLine(ox - 28, oy, ox + 28, oy, TFT_DARKGREY);
+  sprite.drawLine(ox, oy - 28, ox, oy + 28, TFT_DARKGREY);
 }
 
 static inline void updateCubeRotation() {
@@ -427,15 +430,17 @@ static inline void drawCubeDemo() {
 }
 
 void loop() {
-  tft.fillScreen(TFT_BLACK);
+  sprite.fillSprite(TFT_BLACK);
 
   draw2DSquareDemo();
   drawCubeDemo();
 
   // Simple on-screen label
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setCursor(5, 5);
-  tft.print("Fixed-point 2D/3D demo");
+  sprite.setTextColor(TFT_YELLOW, TFT_BLACK);
+  sprite.setCursor(5, 5);
+  sprite.print("Fixed-point 2D/3D demo");
+
+  sprite.pushSprite(0, 0);
 
   delay(16);
 }
