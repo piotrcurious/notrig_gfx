@@ -115,4 +115,33 @@ private:
     }
 };
 
+class TFT_eSprite {
+public:
+    TFT_eSprite(TFT_eSPI *tft) : _tft(tft), _width(0), _height(0) {}
+    void* createSprite(int16_t w, int16_t h) {
+        _width = w;
+        _height = h;
+        return (void*)1;
+    }
+    void deleteSprite() {}
+    void fillSprite(uint16_t color) {
+        if (_tft) _tft->fillScreen(color);
+    }
+    void drawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t color) {
+        if (_tft) _tft->drawLine(x0, y0, x1, y1, color);
+    }
+    void setTextColor(uint16_t fg, uint16_t bg) {}
+    void setCursor(int16_t x, int16_t y) {}
+    void print(const char* s) {}
+    void print(std::string s) {}
+    void pushSprite(int32_t x, int32_t y) {}
+
+    int32_t width() { return _width; }
+    int32_t height() { return _height; }
+
+private:
+    TFT_eSPI *_tft;
+    int32_t _width, _height;
+};
+
 #endif
