@@ -24,5 +24,6 @@
 #define TFT_DARKGREY    0x4A49
 
 inline void delay(uint32_t ms) {}
+inline uint32_t millis() { return 0; }
 
 #endif
